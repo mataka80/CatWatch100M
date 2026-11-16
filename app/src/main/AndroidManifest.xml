@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.catwatch.app">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- 카메라 및 네트워크 권한 -->
     <uses-feature
@@ -23,7 +22,7 @@
 
         <activity
             android:name=".MainActivity"
-            android:configChanges="orientation|screenSize|screenLayout|SmallestScreenSize"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize"
             android:exported="true"
             android:keepScreenOn="true"
             android:screenOrientation="portrait">
