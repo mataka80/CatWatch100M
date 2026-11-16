@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212"
+    android:keepScreenOn="true">
+
+    <!-- Galaxy Z Flip 3 플렉스 모드 (세로 상/하 1:1 분할) 루트 컨테이너 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:weightSum="2">
+
+        <!-- [상단 50%] 카메라 프리뷰 및 10m 원형 타겟 포커스 오버레이 영역 -->
+        <FrameLayout
+            android:id="@+id/topPreviewContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="#000000">
+
+            <androidx.camera.view.PreviewView
+                android:id="@+id/previewView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <com.catwatch.app.RoiOverlayView
+                android:id="@+id/roiOverlayView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent" />
+
+            <!-- 상단 상태 배지 (스케줄 상태, AF=0.0f 고정 상태, 연속 감지 카운트) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top"
+                android:background="#99000000"
+                android:orientation="vertical"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="6dp">
+
+                <TextView
+                    android:id="@+id/tvScheduleStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="[08:00~22:00 가동 중] 초점: 0.0f (무한대 고정) | 1 FPS 분석"
+                    android:textColor="#00E676"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvDetectionStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="원형 타겟을 터치/드래그하여 100m 앞 밥그릇 위치에 맞추세요."
+                    android:textColor="#E0E0E0"
+                    android:textSize="11sp" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <!-- [하단 50%] 광학/원형 반경 제어 패널 및 오늘 방문 고양이 리스트 -->
+        <LinearLayout
+            android:id="@+id/bottomControlContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="#1E1E1E"
+            android:orientation="vertical"
+            android:padding="10dp">
+
+            <!-- 1. 슬라이더 제어부 (원 반지름 / 디지털 줌 / 노출 보정) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#2A2A2A"
+                android:orientation="vertical"
+                android:padding="8dp">
+
+                <!-- 원형 ROI 반지름 슬라이더 (기본값 화면 폭의 20%) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvRadiusLabel"
+                        android:layout_width="110dp"
+                        android:layout_height="wrap_content"
+                        android:text="원 반경 (20%)"
+                        android:textColor="#80CBC4"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <SeekBar
+                        android:id="@+id/sbRadius"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="45"
+                        android:progress="20" />
+                </LinearLayout>
+
+                <!-- 디지털 줌 슬라이더 (0 ~ 100%) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvZoomLabel"
+                        android:layout_width="110dp"
+                        android:layout_height="wrap_content"
+                        android:text="디지털 줌 (0%)"
+                        android:textColor="#B0BEC5"
+                        android:textSize="11sp" />
+
+                    <SeekBar
+                        android:id="@+id/sbZoom"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="100"
+                        android:progress="0" />
+                </LinearLayout>
+
+                <!-- 노출 보정 슬라이더 (AE Compensation Index) -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvExposureLabel"
+                        android:layout_width="110dp"
+                        android:layout_height="wrap_content"
+                        android:text="노출 보정 (0)"
+                        android:textColor="#FFE082"
+                        android:textSize="11sp" />
+
+                    <SeekBar
+                        android:id="@+id/sbExposure"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:max="20"
+                        android:progress="10" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- 2. 기능 액션 버튼 바 (텔레그램 설정 / 테스트 알람 / 암막 절전모드) -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal"
+                android:weightSum="3">
+
+                <Button
+                    android:id="@+id/btnTelegramConfig"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_marginEnd="4dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#37474F"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="텔레그램 설정"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnTestAlarm"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_marginHorizontal="2dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#00695C"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="테스트 알람"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnBlackoutMode"
+                    android:layout_width="0dp"
+                    android:layout_height="38dp"
+                    android:layout_marginStart="4dp"
+                    android:layout_weight="1"
+                    android:backgroundTint="#212121"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:text="암막 절전모드"
+                    android:textColor="#FFCC80"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <!-- 3. 오늘 개체별 누적 방문 횟수 요약 헤더 -->
+            <TextView
+                android:id="@+id/tvDailySummary"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="4dp"
+                android:background="#263238"
+                android:paddingHorizontal="10dp"
+                android:paddingVertical="6dp"
+                android:text="오늘 방문(총 0회): 기록 없음"
+                android:textColor="#FFF59D"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <!-- 4. 오늘 촬영된 고양이 스냅샷 및 개체 이름 태깅 리스트 -->
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvVisitRecords"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:scrollbars="vertical" />
+
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- [유리창 반사 및 OLED 번인 방지용 전체 화면 암막 오버레이] -->
+    <FrameLayout
+        android:id="@+id/blackScreenOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:text="암막 절전모드 작동 중 (유리창 반사 방지)\n화면을 더블 탭(Double Tap)하면 복구됩니다."
+            android:textColor="#262626"
+            android:textSize="12sp" />
+    </FrameLayout>
+
+</FrameLayout>
