@@ -33,13 +33,19 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageView
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
+import android.widget.TableLayout
+import android.widget.TableRow
+import android.widget.ScrollView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.Camera2CameraControl
+import androidx.camera.camera2.interop.CaptureRequestOptions
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
@@ -84,9 +90,9 @@ import kotlin.math.roundToInt
 /**
  * CatWatch 100M (Circular Target UI Edition) - MainActivity
  * - 타겟 기기: Samsung Galaxy Z Flip 3 (SM-F711N, Android 13/14, Min SDK 29, Target SDK 34)
- * - Camera2Interop 수동 무한대 초점(0.0f diopter) 강제 고정 (방충망 및 한글라스 로이복층유리 AF 헌팅 차단)
- * - 1920x1440 이상 고해상도 프레임에서 원형 ROI 정사각형 크롭 + Path.addCircle 원형 마스킹 추론
- * - 1 FPS 발열 제어, "cat" 신뢰도 0.38f 이상, 3초 Debounce, 15분 Cooldown
+ * - 기본 연속 자동 초점과 선택형 수동 디옵터 초점
+ * - 고해상도 줌 동기화 프레임에서 원형 ROI 크롭 및 마스킹 추론
+ * - 1 FPS 발열 제어, "cat" 신뢰도 0.35f 이상, 3초 Debounce, 15분 Cooldown
  * - 08:00 ~ 22:00 자동 스케줄러 (22:00 ~ 08:00 unbindAll 및 알람 원천 차단)
  * - 암막 절전 모드 (화면 밝기 0.01f + 더블 탭 복구)
  * - 로컬 알람음 5초 재생 + OkHttp3 Telegram sendPhoto 멀티파트 비동기 전송
@@ -120,10 +126,14 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_TELEGRAM_CHAT_ID = "telegram_chat_id"
         private const val KEY_VISIT_RECORDS = "visit_records_json"
         private const val KEY_CAT_PRESETS = "cat_presets_json"
+        private const val KEY_VISIT_HISTORY_LOG = "visit_history_log"
+        private const val KEY_NIGHT_OVERRIDE = "night_override"
+        private const val KEY_MANUAL_FOCUS = "manual_focus"
+        private const val KEY_MANUAL_FOCUS_DIOPTER = "manual_focus_diopter"
 
         // AI 탐지 및 알람 정책 상수
         private const val ANALYSIS_INTERVAL_MS = 1000L          // 1 FPS (1,000ms 당 1프레임 추론)
-        private const val CONFIDENCE_THRESHOLD = 0.38f          // "cat" 최소 신뢰도 0.38f
+        private const val CONFIDENCE_THRESHOLD = 0.35f          // "cat" 최소 신뢰도 0.35f
         private const val DEBOUNCE_REQUIRED_FRAMES = 3          // 연속 3프레임(3초) 체류 필터
         private const val COOLDOWN_DURATION_MS = 900_000L       // 15분(900,000ms) 재알림 방지 쿨다운
         private const val ALARM_RING_DURATION_MS = 5000L        // 로컬 알람음 5초 재생 후 자동 정지
@@ -147,6 +157,12 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnTelegramConfig: Button
     private lateinit var btnTestAlarm: Button
     private lateinit var btnBlackoutMode: Button
+    private lateinit var btnNightOverride: Button
+    private lateinit var btnFocusMode: Button
+    private lateinit var btnFocusNow: Button
+    private lateinit var btnVisitStats: Button
+    private lateinit var sbManualFocus: SeekBar
+    private lateinit var tvFocusLabel: TextView
     private lateinit var tvDailySummary: TextView
     private lateinit var rvVisitRecords: RecyclerView
     private lateinit var blackScreenOverlay: FrameLayout
@@ -159,6 +175,8 @@ class MainActivity : AppCompatActivity() {
     // CameraX & TFLite & Network
     private var cameraProvider: ProcessCameraProvider? = null
     private var activeCamera: Camera? = null
+    @Volatile private var currentZoomRatio: Float = 1f
+    private var maximumZoomRatio: Float = 10f
     private var isCameraBound: Boolean = false
     private var objectDetector: ObjectDetector? = null
     private lateinit var cameraExecutor: ExecutorService
@@ -240,6 +258,12 @@ class MainActivity : AppCompatActivity() {
         tvDailySummary = findViewById(R.id.tvDailySummary)
         rvVisitRecords = findViewById(R.id.rvVisitRecords)
         blackScreenOverlay = findViewById(R.id.blackScreenOverlay)
+        btnNightOverride = findViewById(R.id.btnNightOverride)
+        btnFocusMode = findViewById(R.id.btnFocusMode)
+        btnFocusNow = findViewById(R.id.btnFocusNow)
+        btnVisitStats = findViewById(R.id.btnVisitStats)
+        sbManualFocus = findViewById(R.id.sbManualFocus)
+        tvFocusLabel = findViewById(R.id.tvFocusLabel)
     }
 
     /**
@@ -309,19 +333,54 @@ class MainActivity : AppCompatActivity() {
         // 디지털 줌 슬라이더 (0 ~ 100%)
         val savedZoom = prefs.getInt(KEY_ZOOM_PROGRESS, 0).coerceIn(0, 100)
         sbZoom.progress = savedZoom
-        tvZoomLabel.text = "디지털 줌 (${savedZoom}%)"
+        tvZoomLabel.text = "줌 배율 (1.0x)"
         sbZoom.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                tvZoomLabel.text = "디지털 줌 (${progress}%)"
+                val ratio = 1f + (maximumZoomRatio - 1f) * progress / 100f
+                tvZoomLabel.text = "줌 배율 (${String.format(Locale.US, "%.1f", ratio)}x)"
                 if (fromUser) {
                     prefs.edit().putInt(KEY_ZOOM_PROGRESS, progress).apply()
-                    activeCamera?.cameraControl?.setLinearZoom(progress / 100f)
+                    currentZoomRatio = ratio
+                    activeCamera?.cameraControl?.setZoomRatio(ratio.coerceAtMost(maximumZoomRatio))
                 }
             }
 
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                applyCenterMetering(roiOverlayView.normCenterX, roiOverlayView.normCenterY)
+            }
+        })
+
+        btnFocusMode.setOnClickListener {
+            val manual = !prefs.getBoolean(KEY_MANUAL_FOCUS, false)
+            prefs.edit().putBoolean(KEY_MANUAL_FOCUS, manual).apply()
+            btnFocusMode.text = if (manual) "초점: 수동" else "초점: 자동(AF)"
+            sbManualFocus.isEnabled = manual
+            bindCameraUseCases()
+        }
+        sbManualFocus.max = 200
+        sbManualFocus.progress = (prefs.getFloat(KEY_MANUAL_FOCUS_DIOPTER, 0f) * 100f).roundToInt()
+        sbManualFocus.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                val d = progress / 100f
+                tvFocusLabel.text = "수동 초점 (${String.format(Locale.US, "%.2f", d)}D)"
+                if (fromUser && prefs.getBoolean(KEY_MANUAL_FOCUS, false)) {
+                    prefs.edit().putFloat(KEY_MANUAL_FOCUS_DIOPTER, d).apply()
+                    activeCamera?.let { cam ->
+                        Camera2CameraControl.from(cam.cameraControl).setCaptureRequestOptions(
+                            CaptureRequestOptions.Builder()
+                                .setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, d)
+                                .build()
+                        )
+                    }
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
+        sbManualFocus.isEnabled = prefs.getBoolean(KEY_MANUAL_FOCUS, false)
+        btnFocusMode.text = if (prefs.getBoolean(KEY_MANUAL_FOCUS, false)) "초점: 수동" else "초점: 자동(AF)"
+        btnFocusNow.setOnClickListener { applyCenterMetering(roiOverlayView.normCenterX, roiOverlayView.normCenterY) }
 
         // 노출 보정 슬라이더 (AE Compensation Index)
         sbExposure.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -347,6 +406,7 @@ class MainActivity : AppCompatActivity() {
      * 텔레그램 설정, 테스트 알람, 암막 절전모드 버튼 이벤트 연결
      */
     private fun setupActionButtons() {
+        btnNightOverride.text = if (prefs.getBoolean(KEY_NIGHT_OVERRIDE, false)) "야간강제가동: ON" else "야간강제가동: OFF"
         btnTelegramConfig.setOnClickListener {
             showTelegramConfigDialog()
         }
@@ -358,6 +418,13 @@ class MainActivity : AppCompatActivity() {
         btnBlackoutMode.setOnClickListener {
             enterBlackoutPowerSaveMode()
         }
+        btnNightOverride.setOnClickListener {
+            val enabled = !prefs.getBoolean(KEY_NIGHT_OVERRIDE, false)
+            prefs.edit().putBoolean(KEY_NIGHT_OVERRIDE, enabled).apply()
+            btnNightOverride.text = if (enabled) "야간강제가동: ON" else "야간강제가동: OFF"
+            enforceDailySchedule()
+        }
+        btnVisitStats.setOnClickListener { showVisitStatistics() }
     }
 
     /**
@@ -404,12 +471,12 @@ class MainActivity : AppCompatActivity() {
     private fun isWithinActiveScheduleWindow(): Boolean {
         val now = Calendar.getInstance()
         val hour = now.get(Calendar.HOUR_OF_DAY)
-        return hour in ACTIVE_START_HOUR until ACTIVE_END_HOUR
+        return hour in ACTIVE_START_HOUR until ACTIVE_END_HOUR || prefs.getBoolean(KEY_NIGHT_OVERRIDE, false)
     }
 
     private fun enforceDailySchedule() {
         if (isWithinActiveScheduleWindow()) {
-            tvScheduleStatus.text = "[08:00~22:00 가동 중] 초점: 0.0f (무한대 고정) | 1 FPS 분석"
+            tvScheduleStatus.text = if (Calendar.getInstance().get(Calendar.HOUR_OF_DAY) !in ACTIVE_START_HOUR until ACTIVE_END_HOUR) "[야간 강제 가동 중] | 1 FPS 분석" else "[08:00~22:00 가동 중] | 1 FPS 분석"
             tvScheduleStatus.setTextColor(Color.parseColor("#00E676"))
             if (!isCameraBound && cameraProvider != null && hasCameraPermission()) {
                 bindCameraUseCases()
@@ -439,7 +506,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Module 1-3: CameraX 바인딩 + Camera2Interop 수동 무한대 초점(0.0f) 강제 고정 + 1920x1440 고해상도 분석
+     * CameraX 바인딩, 선택형 초점 설정, 고해상도 분석
      */
     private fun bindCameraUseCases() {
         val provider = cameraProvider ?: return
@@ -447,26 +514,26 @@ class MainActivity : AppCompatActivity() {
 
         provider.unbindAll()
 
-        // 1. Preview 빌드 및 Camera2Interop 수동 초점 무한대(0.0f diopter) 강제 고정
+        val manualFocus = prefs.getBoolean(KEY_MANUAL_FOCUS, false)
+        // 기본 연속 AF, 사용자가 수동 초점 모드를 선택한 경우에만 디옵터 고정
         val previewBuilder = Preview.Builder()
         val previewInterop = Camera2Interop.Extender(previewBuilder)
         previewInterop.setCaptureRequestOption(
             CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_OFF
+            if (manualFocus) CaptureRequest.CONTROL_AF_MODE_OFF else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         )
-        previewInterop.setCaptureRequestOption(
-            CaptureRequest.LENS_FOCUS_DISTANCE,
-            0.0f
-        )
+        if (manualFocus) previewInterop.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, prefs.getFloat(KEY_MANUAL_FOCUS_DIOPTER, 0f))
+        previewInterop.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+        previewInterop.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
         val preview = previewBuilder.build().also {
             it.setSurfaceProvider(previewView.surfaceProvider)
         }
 
-        // 2. ImageAnalysis 빌드 (100m 거리 픽셀 보존을 위해 1920x1440 이상 고해상도 프레임 요청)
+        // 2. ImageAnalysis 빌드 (센서 최대급 해상도 우선 요청)
         val resolutionSelector = ResolutionSelector.Builder()
             .setResolutionStrategy(
                 ResolutionStrategy(
-                    Size(1920, 1440),
+                    Size(4032, 3024),
                     ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                 )
             )
@@ -480,12 +547,11 @@ class MainActivity : AppCompatActivity() {
         val analysisInterop = Camera2Interop.Extender(imageAnalysisBuilder)
         analysisInterop.setCaptureRequestOption(
             CaptureRequest.CONTROL_AF_MODE,
-            CaptureRequest.CONTROL_AF_MODE_OFF
+            if (manualFocus) CaptureRequest.CONTROL_AF_MODE_OFF else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         )
-        analysisInterop.setCaptureRequestOption(
-            CaptureRequest.LENS_FOCUS_DISTANCE,
-            0.0f
-        )
+        if (manualFocus) analysisInterop.setCaptureRequestOption(CaptureRequest.LENS_FOCUS_DISTANCE, prefs.getFloat(KEY_MANUAL_FOCUS_DIOPTER, 0f))
+        analysisInterop.setCaptureRequestOption(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+        analysisInterop.setCaptureRequestOption(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
 
         val imageAnalysis = imageAnalysisBuilder.build().also { analysis ->
             analysis.setAnalyzer(cameraExecutor) { imageProxy ->
@@ -515,8 +581,11 @@ class MainActivity : AppCompatActivity() {
         val cam = activeCamera ?: return
 
         // 디지털 줌 복원
+        maximumZoomRatio = (cam.cameraInfo.zoomState.value?.maxZoomRatio ?: 10f).coerceIn(1f, 10f)
         val savedZoom = prefs.getInt(KEY_ZOOM_PROGRESS, 0).coerceIn(0, 100)
-        cam.cameraControl.setLinearZoom(savedZoom / 100f)
+        currentZoomRatio = 1f + (maximumZoomRatio - 1f) * savedZoom / 100f
+        cam.cameraControl.setZoomRatio(currentZoomRatio)
+        tvZoomLabel.text = "줌 배율 (${String.format(Locale.US, "%.1f", currentZoomRatio)}x)"
 
         // 노출 보정 범위 설정 및 복원
         val exposureState = cam.cameraInfo.exposureState
@@ -538,7 +607,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 원형 ROI 중심 좌표를 기준으로 AE/AWB 측광(MeteringPoint) 수행 (AF는 수동 0.0f 유지를 위해 제외)
+     * 원형 ROI 중심 좌표를 기준으로 AF/AE/AWB 측광 수행
      */
     private fun applyCenterMetering(normX: Float, normY: Float) {
         val cam = activeCamera ?: return
@@ -551,7 +620,8 @@ class MainActivity : AppCompatActivity() {
         )
         val action = FocusMeteringAction.Builder(
             point,
-            FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB
+            (if (prefs.getBoolean(KEY_MANUAL_FOCUS, false)) 0 else FocusMeteringAction.FLAG_AF) or
+                FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB
         )
             .setAutoCancelDuration(5, TimeUnit.SECONDS)
             .build()
@@ -563,7 +633,7 @@ class MainActivity : AppCompatActivity() {
      * 1) 1,000ms(1 FPS) 발열 제어 스로틀링
      * 2) 1920x1440 이상 원본 프레임 회전 정렬 후 원형 ROI를 감싸는 정사각형 바운딩 영역(centerX - r, centerY - r, 2r x 2r) 원본 픽셀 크롭
      * 3) 잘라낸 정사각형 비트맵에서 원 바깥쪽 모서리 영역을 검은색으로 마스킹(Path.addCircle + Path.FillType.INVERSE_WINDING)
-     * 4) TFLite ObjectDetector 추론 ("cat" & confidence >= 0.38f)
+     * 4) TFLite ObjectDetector 추론 ("cat" & confidence >= 0.35f)
      * 5) 연속 3프레임(3초) Debounce 및 15분 Cooldown 처리
      */
     private fun processFrame(imageProxy: ImageProxy) {
@@ -588,8 +658,20 @@ class MainActivity : AppCompatActivity() {
             val normCy = roiOverlayView.normCenterY
             val normR = roiOverlayView.normRadius
 
-            val frameW = rawBitmap.width
-            val frameH = rawBitmap.height
+            val crop = imageProxy.cropRect
+            val hardwareCropApplied = crop.width() < imageProxy.width || crop.height() < imageProxy.height
+            val zoom = if (hardwareCropApplied) 1f else currentZoomRatio.coerceAtLeast(1f)
+            val zoomW = (rawBitmap.width / zoom).roundToInt().coerceIn(1, rawBitmap.width)
+            val zoomH = (rawBitmap.height / zoom).roundToInt().coerceIn(1, rawBitmap.height)
+            val zoomedBitmap = Bitmap.createBitmap(
+                rawBitmap,
+                (rawBitmap.width - zoomW) / 2,
+                (rawBitmap.height - zoomH) / 2,
+                zoomW,
+                zoomH
+            )
+            val frameW = zoomedBitmap.width
+            val frameH = zoomedBitmap.height
 
             // 원본 프레임 상의 원 중심 및 반지름(픽셀) 계산
             val centerX = (frameW * normCx).roundToInt()
@@ -607,7 +689,7 @@ class MainActivity : AppCompatActivity() {
 
             // 1. 원본 픽셀 그대로 정사각형 크롭(Crop)
             val squareCroppedBitmap = Bitmap.createBitmap(
-                rawBitmap,
+                zoomedBitmap,
                 cropLeft,
                 cropTop,
                 actualSide,
@@ -718,7 +800,15 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        return Bitmap.createBitmap(argbBitmap, 0, 0, width, height, matrix, true)
+        val crop = imageProxy.cropRect
+        val cropped = Bitmap.createBitmap(
+            argbBitmap,
+            crop.left.coerceIn(0, width - 1),
+            crop.top.coerceIn(0, height - 1),
+            crop.width().coerceIn(1, width - crop.left.coerceIn(0, width - 1)),
+            crop.height().coerceIn(1, height - crop.top.coerceIn(0, height - 1))
+        )
+        return Bitmap.createBitmap(cropped, 0, 0, cropped.width, cropped.height, matrix, true)
     }
 
     /**
@@ -845,6 +935,7 @@ class MainActivity : AppCompatActivity() {
         )
         visitList.add(0, newRecord)
         saveVisitRecordsToPrefs()
+        appendVisitHistory(newRecord)
         visitAdapter.notifyItemInserted(0)
         rvVisitRecords.scrollToPosition(0)
         updateDailySummaryHeader()
@@ -892,15 +983,15 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        playLocalAlarmForFiveSeconds()
+        playLocalAlarmForFiveSeconds(force = true)
         sendTelegramPhotoAsync(tempFile, timeStr, 92, isTest = true)
     }
 
     /**
      * Module 4-1: 공기계 자체 벨소리 (RingtoneManager.TYPE_ALARM & AudioAttributes.USAGE_ALARM 5초 재생 후 자동 정지)
      */
-    private fun playLocalAlarmForFiveSeconds() {
-        if (!isWithinActiveScheduleWindow()) return
+    private fun playLocalAlarmForFiveSeconds(force: Boolean = false) {
+        if (!force && !isWithinActiveScheduleWindow()) return
 
         stopAlarmRingtone()
         try {
@@ -1062,6 +1153,89 @@ class MainActivity : AppCompatActivity() {
         return SimpleDateFormat("yyyy-MM-dd", Locale.KOREA).format(Date())
     }
 
+    private fun appendVisitHistory(record: VisitRecord) {
+        val entries = try { JSONArray(prefs.getString(KEY_VISIT_HISTORY_LOG, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        val item = JSONObject().apply {
+            put("id", record.id); put("dateStr", record.dateStr); put("timeStr", record.timeStr)
+            put("catName", record.catName); put("confidence", record.confidence)
+        }
+        entries.put(item)
+        val start = (entries.length() - 1000).coerceAtLeast(0)
+        val limited = JSONArray()
+        for (i in start until entries.length()) limited.put(entries.getJSONObject(i))
+        prefs.edit().putString(KEY_VISIT_HISTORY_LOG, limited.toString()).apply()
+    }
+
+    private fun updateHistoryCatName(record: VisitRecord) {
+        val old = try { JSONArray(prefs.getString(KEY_VISIT_HISTORY_LOG, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        val updated = JSONArray()
+        for (i in 0 until old.length()) {
+            val item = old.getJSONObject(i)
+            if (item.optLong("id") == record.id) item.put("catName", record.catName)
+            updated.put(item)
+        }
+        prefs.edit().putString(KEY_VISIT_HISTORY_LOG, updated.toString()).apply()
+    }
+
+    private fun showVisitStatistics() {
+        val source = try { JSONArray(prefs.getString(KEY_VISIT_HISTORY_LOG, "[]") ?: "[]") } catch (_: Exception) { JSONArray() }
+        val records = (0 until source.length()).map { source.getJSONObject(it) }.sortedWith(
+            compareByDescending<JSONObject> { it.optString("dateStr") }.thenByDescending { it.optString("timeStr") }
+        )
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(12, 8, 12, 8) }
+        val tabs = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val content = FrameLayout(this)
+        val names = listOf("일자별 요약 표", "시간대별 시간표", "전체 방문 기록")
+        fun drawTable(tab: Int) {
+            content.removeAllViews()
+            val table = TableLayout(this).apply { isStretchAllColumns = true }
+            fun row(values: List<String>, header: Boolean = false, highlight: Boolean = false) {
+                val tr = TableRow(this)
+                tr.setBackgroundColor(if (header) Color.DKGRAY else if (highlight) Color.rgb(38, 75, 69) else Color.TRANSPARENT)
+                values.forEach { value ->
+                    tr.addView(TextView(this).apply {
+                        text = value; setTextColor(if (header) Color.WHITE else Color.LTGRAY)
+                        textSize = 12f; setPadding(8, 8, 8, 8)
+                    })
+                }
+                table.addView(tr)
+            }
+            when (tab) {
+                0 -> {
+                    row(listOf("일자", "총 방문", "개체별 방문 내역", "활동 시간대"), true)
+                    records.groupBy { it.optString("dateStr") }.toSortedMap(compareByDescending { it }).forEach { (date, day) ->
+                        val cats = day.groupingBy { it.optString("catName", "미지정") }.eachCount().entries.joinToString(", ") { "${it.key}(${it.value})" }
+                        row(listOf(date, "${day.size}", cats, "${day.minOf { it.optString("timeStr") }}~${day.maxOf { it.optString("timeStr") }}"))
+                    }
+                }
+                1 -> {
+                    row(listOf("시간대", "방문 빈도", "주요 방문 고양이", "최근 방문 시각"), true)
+                    for (hour in 0..23) {
+                        val visits = records.filter { it.optString("timeStr").take(2).toIntOrNull() == hour }
+                        val major = visits.groupingBy { it.optString("catName", "미지정") }.eachCount().maxByOrNull { it.value }?.key ?: "-"
+                        row(listOf("%02d:00~%02d:59".format(hour, hour), "🐾 ${visits.size}", major, visits.firstOrNull()?.optString("timeStr") ?: "-"), highlight = visits.isNotEmpty())
+                    }
+                }
+                else -> {
+                    row(listOf("일자", "방문 시각", "고양이 이름", "신뢰도(%)"), true)
+                    records.forEach { row(listOf(it.optString("dateStr"), it.optString("timeStr"), it.optString("catName", "미지정"), "${it.optInt("confidence")}%")) }
+                }
+            }
+            val horizontal = HorizontalScrollView(this).apply { addView(table) }
+            content.addView(ScrollView(this).apply { addView(horizontal) })
+        }
+        names.forEachIndexed { index, name ->
+            tabs.addView(Button(this).apply {
+                text = name; textSize = 10f
+                setOnClickListener { drawTable(index) }
+            }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        root.addView(tabs)
+        root.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (420 * resources.displayMetrics.density).roundToInt()))
+        drawTable(0)
+        AlertDialog.Builder(this).setTitle("방문통계·시간표").setView(root).setPositiveButton("닫기", null).show()
+    }
+
     private fun purgeOldVisitRecords() {
         val todayStr = getTodayDateString()
         val rawJson = prefs.getString(KEY_VISIT_RECORDS, "[]") ?: "[]"
@@ -1209,6 +1383,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     record.catName = presets[which]
                     saveVisitRecordsToPrefs()
+                    updateHistoryCatName(record)
                     visitAdapter.notifyItemChanged(position)
                     updateDailySummaryHeader()
                 }
@@ -1241,6 +1416,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     visitList[position].catName = newName
                     saveVisitRecordsToPrefs()
+                    updateHistoryCatName(visitList[position])
                     visitAdapter.notifyItemChanged(position)
                     updateDailySummaryHeader()
                 }

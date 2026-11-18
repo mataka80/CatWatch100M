@@ -202,6 +202,20 @@
                     android:textSize="11sp" />
             </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <Button android:id="@+id/btnFocusMode" android:layout_width="wrap_content" android:layout_height="36dp" android:text="초점: 자동(AF)" android:textSize="10sp" />
+                <Button android:id="@+id/btnFocusNow" android:layout_width="wrap_content" android:layout_height="36dp" android:text="초점맞춤" android:textSize="10sp" />
+                <TextView android:id="@+id/tvFocusLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="수동 초점 (0.00D)" android:textColor="#80CBC4" android:textSize="10sp" />
+            </LinearLayout>
+            <SeekBar android:id="@+id/sbManualFocus" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="200" android:progress="0" />
+
+            <Button android:id="@+id/btnNightOverride" android:layout_width="match_parent" android:layout_height="36dp" android:text="야간강제가동: OFF" android:textSize="11sp" />
+            <Button android:id="@+id/btnVisitStats" android:layout_width="match_parent" android:layout_height="36dp" android:text="📊 방문통계·시간표" android:textSize="11sp" />
+
             <!-- 3. 오늘 개체별 누적 방문 횟수 요약 헤더 -->
             <TextView
                 android:id="@+id/tvDailySummary"
